@@ -1,0 +1,451 @@
+Below is a security‑focused, end‑to‑end plan that adds a back‑end API (preferable for a static site), tight nginx configuration, and front‑end changes for the email form. I provide a complete Node.js/Express example API, nginx snippets, and updated frontend form + JS. I also outline deployment steps and security considerations.
+
+1. Overall approach and security posture
+- Use a small, self‑contained API behind nginx with TLS (Certbot already in place).
+- API endpoint: POST /api/quote
+- Validate input server‑side; prevent bot abuse with a honeypot field and rate limiting.
+- Send email using a trusted SMTP provider (or a transactional email API). Do not expose credentials in frontend code.
+- Optional: integrate Google reCAPTCHA v3/v2 to deter abuse (configurable).
+- Security hardening: strict TLS, secure headers, input validation, limited payload, CORS restricted to your domain, and proper error handling.
+1. Backend API: Node.js + Express (example)
+Why Node.js? Easy to deploy on a variety of hosts; small footprint; simple to extend.
+
+What this does
+
+- Endpoint: POST /api/quote
+- Accepts JSON payload: name, email, company, service, message, trap (honeypot)
+- Validates inputs, enforces a limit on rate per IP, and optionally verifies a reCAPTCHA token if you enable it.
+- Sends an email to MAIL_TO with the form content; optionally includes a "reply-to" header using the user’s email.
+- Returns JSON: { success: true } or { error: "…" }
+
+Files you’ll deploy (example)
+
+1. package.json (dependencies)
+
+```
+{
+  "name": "contact-api",
+  "version": "1.0.0",
+  "description": "Quote request API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "helmet": "^6.0.0",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^6.7.0",
+    "nodemailer": "^6.9.0"
+  }
+}
+
+```
+
+1. server.js (Express API)
+Copy this as server.js. Adjust env vars as described below.
+
+```jsx
+// server.js
+require('dotenv').config();
+const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const nodemailer = require('nodemailer');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Security headers
+app.use(helmet());
+
+// Payload size limit
+app.use(express.json({ limit: '1mb' }));
+
+// CORS: restrict to your domain(s)
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin: function (origin, cb) {
+    if (!origin) return cb(null, true); // allow non-browser clients (e.g., curl/tools)
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error('Not allowed by CORS'));
+  },
+  methods: ['POST'],
+  allowedHeaders: ['Content-Type']
+};
+
+app.use(cors(corsOptions));
+
+// Simple rate limiting for the API
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60,             // limit each IP to 60 requests per windowMs
+  message: { error: 'Too many requests, please try again later.' }
+});
+app.use('/api/', apiLimiter);
+
+// Honeypot field check will be done in handler
+
+// Email transporter (SMTP) configuration via environment variables
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: parseInt(process.env.SMTP_PORT, 10) || 587,
+  secure: (Number(process.env.SMTP_PORT) === 465), // true for 465, false otherwise
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
+// Optional: verify transporter at startup
+transporter.verify().catch(err => {
+  console.error('SMTP transporter verification failed:', err.message);
+});
+
+// Allowed service options (must match client values)
+const ALLOWED_SERVICES = new Set([
+  'Front-End Systems',
+  'Platform & Backend',
+  'Care & Optimization'
+]);
+
+// Simple email content builder
+function buildMailContent(data) {
+  const { name, email, company, service, message } = data;
+  const html = `
+    <p>You have a new quote request from <strong>${escapeHtml(name)}</strong>.</p>
+    <ul>
+      <li><strong>Name:</strong> ${escapeHtml(name)}</li>
+      <li><strong>Email:</strong> ${escapeHtml(email)}</li>
+      <li><strong>Company:</strong> ${escapeHtml(company || '')}</li>
+      <li><strong>Service:</strong> ${escapeHtml(service || '')}</li>
+    </ul>
+    <p><strong>Project details:</strong></p>
+    <p>${escapeHtml(message || '')}</p>
+  `;
+  const text = `
+New quote request
+Name: ${name}
+Email: ${email}
+Company: ${company || ''}
+Service: ${service || ''}
+Project details:
+${message || ''}
+  `;
+  return { html, text };
+}
+
+// Escape helper to prevent basic HTML injection
+function escapeHtml(str) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Recaptcha verification placeholder (optional)
+async function verifyRecaptcha(token) {
+  const secret = process.env.RECAPTCHA_SECRET;
+  if (!secret) return true; // if not configured, skip verification
+  if (!token) return false;
+
+  try {
+    const res = await fetch('<https://www.google.com/recaptcha/api/siteverify>', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        secret,
+        response: token
+      })
+    });
+    const data = await res.json();
+    // For v2: data.success === true
+    // For v3: data.score exists; require score >= 0.5 if you use v3
+    return data.success === true;
+  } catch (e) {
+    console.error('Recaptcha verification error:', e);
+    return false;
+  }
+}
+
+// API route
+app.post('/api/quote', async (req, res) => {
+  try {
+    const { name, email, company, service, message, trap, recaptcha_token } = req.body || {};
+
+    // Honeypot check
+    if (trap && trap.toString().trim().length > 0) {
+      return res.status(400).json({ error: 'Bot detected' });
+    }
+
+    // Basic server-side validation
+    if (
+      !name || typeof name !== 'string' || name.trim().length === 0 ||
+      !email || typeof email !== 'string' || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) ||
+      !service || typeof service !== 'string' || !ALLOWED_SERVICES.has(service) ||
+      !message || typeof message !== 'string' || message.trim().length < 10
+    ) {
+      return res.status(400).json({ error: 'Invalid input. Please check your entries.' });
+    }
+
+    // Recaptcha check (optional)
+    const recaptchaOk = await verifyRecaptcha(recaptcha_token);
+    if (!recaptchaOk) {
+      return res.status(400).json({ error: 'Recaptcha verification failed.' });
+    }
+
+    // Build email
+    const { html, text } = buildMailContent({ name, email, company, service, message });
+
+    // Send email to site owner
+    const mailOptions = {
+      from: process.env.MAIL_FROM || email, // customizable; can also be a fixed no-reply address
+      to: process.env.MAIL_TO,
+      subject: `New quote request: ${service} from ${name}`,
+      text,
+      html,
+      replyTo: email
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    // Optional: send confirmation to the user as well
+    // await transporter.sendMail({ from: mailOptions.from, to: email, subject: 'We received your request', text: 'Thanks for reaching out...' });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error processing quote:', err);
+    res.status(500).json({ error: 'Internal server error. Please try again later.' });
+  }
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`Quote API listening on port ${PORT}`);
+});
+
+```
+
+Notes on environment variables (set these in your deployment environment or .env file):
+
+- PORT=3000
+- SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+- MAIL_TO (recipient email)
+- MAIL_FROM (optional default sender)
+- ALLOWED_ORIGINS=https://your-domain.com
+- RECAPTCHA_SECRET (optional)
+- If you want to skip recaptcha verification, leave RECAPTCHA_SECRET undefined or empty.
+1. How to run (basic)
+- npm install
+- Create a .env with the variables above
+- node server.js (or npm start)
+1. Optional: Dockerfile (for containerized deployment)
+
+```
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+EXPOSE 3000
+CMD ["node", "server.js"]
+
+```
+
+1. Optional: nginx configuration
+You’re serving a static site with Certbot TLS. Add a reverse proxy for the API and some security headers. Example snippets:
+
+```
+- Redirect HTTP to HTTPS (in a server block listening on 80)
+server {
+  listen 80;
+  server_name your-domain.com;
+  return 301 https://$host$request_uri;
+}
+
+- TLS-enabled server serving static files and API proxy
+server {
+  listen 443 ssl http2;
+  server_name your-domain.com;
+
+  ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+  include /etc/letsencrypt/options-ssl-nginx.conf;
+  ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+  root /var/www/your-site;
+  index index.html;
+
+  # Security headers
+  add_header X-Content-Type-Options nosniff;
+  add_header X-Frame-Options SAMEORIGIN;
+  add_header Referrer-Policy no-referrer-when-downgrade;
+  add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
+  # Static assets
+  location / {
+    try_files $uri $uri/ =404;
+  }
+
+  # API proxy
+  location /api/ {
+    proxy_pass <http://127.0.0.1:3000/>;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+  # Optional: limit request rate for /api
+  limit_req_zone $binary_remote_addr zone=api:10m rate=20r/m;
+  location /api/ {
+    limit_req zone=api burst=5;
+  }
+}
+
+```
+
+1. Frontend changes: update the email form and add JS to call the API
+Why a change? Your form currently posts to a server-side endpoint you don’t have. The API will be on the same domain under /api/quote, and you’ll submit via fetch with JSON.
+
+What to change in HTML (form)
+
+- Keep the visual structure, but stop relying on native form POST to a server you don’t have.
+- Add a honeypot input and a small script to post to the API.
+
+Modified form (HTML fragment)
+
+```
+<form class="bridge-form needs-validation" novalidate aria-labelledby="contact" data-form-type="quote">
+  <div class="form-grid">
+    <label for="home-name">
+      Name
+      <input type="text" id="home-name" name="name" required data-label="Name" autocomplete="name" placeholder="Casey Jordan" aria-describedby="home-name-error">
+      <span class="field-hint">Required</span>
+      <span class="field-error" id="home-name-error" role="alert" aria-live="polite"></span>
+    </label>
+    <label for="home-email">
+      Email
+      <input type="email" id="home-email" name="email" required data-label="Email" autocomplete="email" placeholder="you@company.com" aria-describedby="home-email-error">
+      <span class="field-hint">We’ll only email about this request.</span>
+      <span class="field-error" id="home-email-error" role="alert" aria-live="polite"></span>
+    </label>
+    <label for="home-company">
+      Company
+      <input type="text" id="home-company" name="company" autocomplete="organization" placeholder="Brightside Apps">
+      <span class="field-hint">Optional</span>
+    </label>
+    <label for="home-service">
+      Service interest
+      <select id="home-service" name="service" required data-label="Service interest" aria-describedby="home-service-error">
+        <option value="">Select an option</option>
+        <option>Front-End Systems</option>
+        <option>Platform &amp; Back-End</option>
+        <option>Care &amp; Optimization</option>
+      </select>
+      <span class="field-error" id="home-service-error" role="alert" aria-live="polite"></span>
+    </label>
+    <label class="full" for="home-message">
+      Project details
+      <textarea id="home-message" name="message" rows="4" required data-label="Project details" placeholder="Goals, timelines, success metrics" aria-describedby="home-message-error"></textarea>
+      <span class="field-error" id="home-message-error" role="alert" aria-live="polite"></span>
+    </label>
+  </div>
+
+  <!-- Honeypot: bots fill this; humans leave empty -->
+  <input type="text" name="trap" style="position:absolute; left:-9999px; width:1px; height:1px;" autocomplete="off" tabindex="-1" aria-hidden="true" />
+
+  <div class="form-footer">
+    <button class="btn btn-primary" type="submit">Send request</button>
+    <p class="form-note">Live status: <span class="form-status" role="status" aria-live="polite">Waiting for input</span></p>
+  </div>
+</form>
+
+```
+
+JavaScript (add to a script file or a script tag after the form)
+
+- This handles client validation, submits to /api/quote, and updates status/errors.
+
+```html
+<script>
+(function () {
+  const form = document.querySelector('.bridge-form');
+  if (!form) return;
+
+  const statusEl = document.querySelector('.form-status');
+  const errorById = id => document.getElementById(id);
+
+  function setError(id, msg) {
+    const el = errorById(id);
+    if (el) {
+      el.textContent = msg || '';
+    }
+  }
+
+  async function submitForm(event) {
+    event.preventDefault();
+
+    // Basic client validation
+    const name = document.getElementById('home-name').value.trim();
+    const email = document.getElementById('home-email').value.trim();
+    const service = document.getElementById('home-service').value;
+    const message = document.getElementById('home-message').value.trim();
+
+    let valid = true;
+    if (!name) { setError('home-name-error', 'Please enter your name.'); valid = false; } else setError('home-name-error', '');
+    if (!email || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) { setError('home-email-error', 'Please enter a valid email.'); valid = false; } else setError('home-email-error', '');
+    if (!service) { setError('home-service-error', 'Please select a service.'); valid = false; } else setError('home-service-error', '');
+    if (!message || message.length < 10) { setError('home-message-error', 'Please provide more details (min 10 chars).'); valid = false; } else setError('home-message-error', '');
+
+    if (!valid) {
+      statusEl.textContent = 'Please fix errors above.';
+      return;
+    }
+
+    // Honeypot trap value (should be empty)
+    const trap = document.querySelector('input[name="trap"]')?.value || '';
+
+    const payload = {
+      name,
+      email,
+      company: (document.getElementById('home-company').value || '').trim(),
+      service,
+      message,
+      trap
+      // recaptcha_token: document.querySelector('#recaptchaToken')?.value // if using reCAPTCHA
+    };
+
+    statusEl.textContent = 'Sending...';
+
+    try {
+      const res = await fetch('/api/quote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok && data.success !== false) {
+        statusEl.textContent = 'Request sent. We will contact you soon.';
+        form.reset();
+      } else {
+        statusEl.textContent = data.error || 'An error occurred. Please try again.';
+      }
+    } catch (err) {
+      statusEl.textContent = 'Network error. Please try again later.';
+    }
+  }
+
+  form.addEventListener('submit', submitForm);
+})();
+</script>
+```
+

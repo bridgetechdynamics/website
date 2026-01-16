@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" role="img" aria-labelledby="portraitTitle">
+  <title id="portraitTitle">Stylized portrait placeholder</title>
+  <rect width="400" height="500" rx="32" fill="#F1E5CA" />
+  <circle cx="200" cy="170" r="80" fill="#0F8D93" opacity="0.2" />
+  <circle cx="200" cy="170" r="65" fill="#FFE8B0" />
+  <rect x="110" y="250" width="180" height="170" rx="90" fill="#DFA400" opacity="0.35" />
+  <rect x="80" y="320" width="240" height="140" rx="40" fill="#0F8D93" opacity="0.35" />
+</svg>

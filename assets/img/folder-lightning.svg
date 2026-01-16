@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 48" role="img" aria-labelledby="folderLightningTitle">
+  <title id="folderLightningTitle">Folder with lightning bolt</title>
+  <defs>
+    <linearGradient id="folderLightningGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#D9C6A8"/>
+      <stop offset="100%" stop-color="#CBB79A"/>
+    </linearGradient>
+  </defs>
+  <path d="M8.5 12a3.5 3.5 0 0 1 3.5-3.5h11.2a4.5 4.5 0 0 1 3 1.1l2.6 2.2a4.5 4.5 0 0 0 3 1.1H50a3.5 3.5 0 0 1 3.5 3.5v21a5.5 5.5 0 0 1-5.5 5.5H14a5.5 5.5 0 0 1-5.5-5.5v-20Z" fill="url(#folderLightningGradient)" stroke="#C2AC8B" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M6.8 18.2c0-2.2 1.8-3.9 3.9-3.9h42.6c2.2 0 3.9 1.8 3.9 3.9v2.4a5 5 0 0 1-5 5H11.7a5 5 0 0 1-5-5v-2.4Z" fill="#F2E7D7" stroke="#D3C1A6" stroke-width="1.2"/>
+  <path d="m27.5 34 4.3-8.2h-4.7l4.7-9.8h7.2l-4.3 7.7h4.8L31 34h-3.5Z" fill="#17B6A9" stroke="#0F6E64" stroke-width="1"/>
+</svg>
