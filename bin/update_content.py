@@ -13,9 +13,16 @@ def update_html_from_yaml(html_file, yaml_file):
 
     # Update the HTML content based on the YAML data
     for key, value in yaml_data.items():
-        element = soup.find(id=key)
-        if element:
-            element.string = value
+        print("Search: %s = %s" % (key, value))
+        # Find all elements with data-copy-id attribute equal to the key
+        elements = soup.find_all(attrs={"data-copy-id": key})
+
+        if elements:
+            for element in elements:
+                print("\tFound: data-copy-id=%s" % key)
+                element.string = str(value)
+        else:
+            print("\tNo element found with data-copy-id='%s'" % key)
 
     # Write the updated HTML back to the file
     with open(html_file, 'w', encoding='utf-8') as h_file:
